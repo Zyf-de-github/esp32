@@ -6,6 +6,7 @@
 */
 
 #include <string.h>
+#include <stdlib.h>
 #include <sys/errno.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -154,6 +155,8 @@ static void send_task(void *pvParameters)
 static void uart_to_wifi_task(void *pvParameters)
 {
     uint8_t *uart_data = (uint8_t *)malloc(UART_BUF_SIZE);
+    uint32_t uart_msg_index = 0;
+    uint64_t uart_score_sum = 0;
     if (uart_data == NULL) {
         ESP_LOGE(TAG, "UART 缓冲区分配失败");
         vTaskDelete(NULL);
@@ -168,16 +171,62 @@ static void uart_to_wifi_task(void *pvParameters)
         
         if (len > 0) {
             uart_data[len] = '\0';
-            ESP_LOGI(TAG, "UART 收到 %d 字节: %s", len, (char *)uart_data);
+            char *uart_text = (char *)uart_data;
+
+            // 去除末尾换行/空格，避免 "0\r\n" 匹配失败
+            while (len > 0 && (uart_text[len - 1] == '\r' || uart_text[len - 1] == '\n' || uart_text[len - 1] == ' ' || uart_text[len - 1] == '\t')) {
+                uart_text[len - 1] = '\0';
+                len--;
+            }
+            while (*uart_text == ' ' || *uart_text == '\t') {
+                uart_text++;
+            }
+
+            ESP_LOGI(TAG, "UART 收到 %d 字节: %s", len, uart_text);
             
             // 通过 WiFi 转发到手机
             if (client_connected && client_socket >= 0) {
                 // 添加前缀标识这是来自 UART 的数据
-                char wifi_buffer[UART_BUF_SIZE + 32];
-                snprintf(wifi_buffer, sizeof(wifi_buffer), "[UART] %s\r\n", (char *)uart_data);
-                int sent = send(client_socket, wifi_buffer, strlen(wifi_buffer), 0);
+                char wifi_buffer[UART_BUF_SIZE + 128];
+                int sent = -1;
+                char *endptr = NULL;
+                long uart_value = strtol(uart_text, &endptr, 10);
+                int is_valid_number = (endptr != uart_text && *endptr == '\0');
+
+                if (is_valid_number && uart_value == 0) {
+                    if(uart_msg_index==0)uart_msg_index=1;
+                    snprintf(wifi_buffer, sizeof(wifi_buffer),
+                             "开福失败，平均得分为:%f，激活灯臂数为:%lu\r\n",
+                             (double)uart_score_sum / (double)uart_msg_index,
+                             (unsigned long)uart_msg_index);
+                    sent = send(client_socket, wifi_buffer, strlen(wifi_buffer), 0);
+                    uart_msg_index = 0;
+                    uart_score_sum = 0;
+                } else if (is_valid_number && uart_value == 999) {
+                    if(uart_msg_index==0)uart_msg_index=1;
+                    snprintf(wifi_buffer, sizeof(wifi_buffer),
+                             "开福成功，平均得分为:%f，激活灯臂数为:%lu\r\n",
+                             (double)uart_score_sum / (double)uart_msg_index,
+                             (unsigned long)uart_msg_index);
+                    sent = send(client_socket, wifi_buffer, strlen(wifi_buffer), 0);
+                    uart_msg_index = 0;
+                    uart_score_sum = 0;
+                } else if(is_valid_number && 1<= uart_value && uart_value <= 10) {
+                    uart_msg_index++;
+                    if (is_valid_number && uart_value > 0) {
+                        uart_score_sum += (uint64_t)uart_value;
+                    }
+                    snprintf(wifi_buffer, sizeof(wifi_buffer), "第%lu次击打数据环数为:%s\r\n", (unsigned long)uart_msg_index, uart_text);
+                    sent = send(client_socket, wifi_buffer, strlen(wifi_buffer), 0);
+                } else {
+                    snprintf(wifi_buffer, sizeof(wifi_buffer), "错误数据\r\n");
+                    sent = send(client_socket, wifi_buffer, strlen(wifi_buffer), 0);
+                    uart_msg_index = 0;
+                    uart_score_sum = 0;
+                }
+
                 if (sent > 0) {
-                    ESP_LOGI(TAG, "已转发到手机: %s", (char *)uart_data);
+                    ESP_LOGI(TAG, "已转发到手机: %s", uart_text);
                 } else {
                     ESP_LOGE(TAG, "WiFi 发送失败");
                 }
