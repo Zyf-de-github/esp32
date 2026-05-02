@@ -1,0 +1,11 @@
+# PlatformIO build artefacts
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# IDE files
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
